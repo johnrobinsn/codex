@@ -114,6 +114,10 @@ pub enum UserNotification {
         /// The last message sent by the assistant in the turn.
         last_assistant_message: Option<String>,
     },
+
+    /// Fired when the user cancels/interrupts the agent while it's working.
+    #[serde(rename_all = "kebab-case")]
+    TurnCancelled { thread_id: String, turn_id: String },
 }
 
 #[cfg(test)]
@@ -224,6 +228,20 @@ mod tests {
         assert_eq!(
             serialized,
             r#"{"type":"approval-response","thread-id":"b5f6c1c2-1111-2222-3333-444455556666","turn-id":"1","approved":true}"#
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_turn_cancelled() -> Result<()> {
+        let notification = UserNotification::TurnCancelled {
+            thread_id: "b5f6c1c2-1111-2222-3333-444455556666".to_string(),
+            turn_id: "1".to_string(),
+        };
+        let serialized = serde_json::to_string(&notification)?;
+        assert_eq!(
+            serialized,
+            r#"{"type":"turn-cancelled","thread-id":"b5f6c1c2-1111-2222-3333-444455556666","turn-id":"1"}"#
         );
         Ok(())
     }
