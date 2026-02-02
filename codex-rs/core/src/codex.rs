@@ -201,6 +201,7 @@ use crate::tools::spec::ToolsConfig;
 use crate::tools::spec::ToolsConfigParams;
 use crate::turn_diff_tracker::TurnDiffTracker;
 use crate::unified_exec::UnifiedExecProcessManager;
+use crate::user_notification::ApprovalType;
 use crate::user_notification::UserNotification;
 use crate::util::backoff;
 use crate::windows_sandbox::WindowsSandboxLevelExt;
@@ -1609,6 +1610,9 @@ impl Session {
             warn!("Overwriting existing pending approval for sub_id: {event_id}");
         }
 
+        // Capture command description before command is moved
+        let command_description = command.join(" ");
+
         let parsed_cmd = parse_command(&command);
         let event = EventMsg::ExecApprovalRequest(ExecApprovalRequestEvent {
             call_id,
@@ -1620,6 +1624,16 @@ impl Session {
             parsed_cmd,
         });
         self.send_event(turn_context, event).await;
+
+        // Notify external watchers that approval is requested
+        self.notifier()
+            .notify(&UserNotification::ApprovalRequested {
+                thread_id: self.conversation_id.to_string(),
+                turn_id: turn_context.sub_id.clone(),
+                approval_type: ApprovalType::Exec,
+                description: command_description,
+            });
+
         rx_approve.await.unwrap_or_default()
     }
 
@@ -1649,6 +1663,13 @@ impl Session {
             warn!("Overwriting existing pending approval for sub_id: {event_id}");
         }
 
+        // Build description from changed files
+        let patch_description: String = changes
+            .keys()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+
         let event = EventMsg::ApplyPatchApprovalRequest(ApplyPatchApprovalRequestEvent {
             call_id,
             turn_id: turn_context.sub_id.clone(),
@@ -1657,6 +1678,16 @@ impl Session {
             grant_root,
         });
         self.send_event(turn_context, event).await;
+
+        // Notify external watchers that approval is requested
+        self.notifier()
+            .notify(&UserNotification::ApprovalRequested {
+                thread_id: self.conversation_id.to_string(),
+                turn_id: turn_context.sub_id.clone(),
+                approval_type: ApprovalType::Patch,
+                description: patch_description,
+            });
+
         rx_approve
     }
 
@@ -2719,6 +2750,17 @@ mod handlers {
         request_id: RequestId,
         decision: codex_protocol::approvals::ElicitationAction,
     ) {
+        // Notify external watchers of the approval response
+        let approved = matches!(
+            decision,
+            codex_protocol::approvals::ElicitationAction::Accept
+        );
+        sess.notifier().notify(&UserNotification::ApprovalResponse {
+            thread_id: sess.conversation_id.to_string(),
+            turn_id: request_id.to_string(),
+            approved,
+        });
+
         let action = match decision {
             codex_protocol::approvals::ElicitationAction::Accept => ElicitationAction::Accept,
             codex_protocol::approvals::ElicitationAction::Decline => ElicitationAction::Decline,
@@ -2732,7 +2774,7 @@ mod handlers {
         };
         let response = ElicitationResponse { action, content };
         if let Err(err) = sess
-            .resolve_elicitation(server_name, request_id, response)
+            .resolve_elicitation(server_name.clone(), request_id, response)
             .await
         {
             warn!(
@@ -2745,6 +2787,14 @@ mod handlers {
     /// Propagate a user's exec approval decision to the session.
     /// Also optionally applies an execpolicy amendment.
     pub async fn exec_approval(sess: &Arc<Session>, id: String, decision: ReviewDecision) {
+        // Notify external watchers of the approval response
+        let approved = !matches!(decision, ReviewDecision::Abort);
+        sess.notifier().notify(&UserNotification::ApprovalResponse {
+            thread_id: sess.conversation_id.to_string(),
+            turn_id: id.clone(),
+            approved,
+        });
+
         if let ReviewDecision::ApprovedExecpolicyAmendment {
             proposed_execpolicy_amendment,
         } = &decision
@@ -2778,6 +2828,14 @@ mod handlers {
     }
 
     pub async fn patch_approval(sess: &Arc<Session>, id: String, decision: ReviewDecision) {
+        // Notify external watchers of the approval response
+        let approved = !matches!(decision, ReviewDecision::Abort);
+        sess.notifier().notify(&UserNotification::ApprovalResponse {
+            thread_id: sess.conversation_id.to_string(),
+            turn_id: id.clone(),
+            approved,
+        });
+
         match decision {
             ReviewDecision::Abort => {
                 sess.interrupt_task().await;
@@ -3089,6 +3147,11 @@ mod handlers {
             };
             sess.send_event_raw(event).await;
         }
+
+        // Notify external watchers that the session is ending
+        sess.notifier().notify(&UserNotification::SessionEnd {
+            thread_id: sess.conversation_id.to_string(),
+        });
 
         let event = Event {
             id: sub_id,
