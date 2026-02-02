@@ -964,6 +964,13 @@ impl Session {
             next_internal_sub_id: AtomicU64::new(0),
         });
 
+        // Notify external watchers that a session has started
+        sess.notifier().notify(&UserNotification::SessionStart {
+            thread_id: conversation_id.to_string(),
+            cwd: session_configuration.cwd.display().to_string(),
+            pid: std::process::id(),
+        });
+
         // Dispatch the SessionConfiguredEvent first and then report any errors.
         // If resuming, include converted initial messages in the payload so UIs can render them immediately.
         let initial_messages = initial_history.get_event_msgs();
@@ -3309,6 +3316,25 @@ pub(crate) async fn run_turn(
         collaboration_mode_kind: turn_context.collaboration_mode.mode,
     });
     sess.send_event(&turn_context, event).await;
+
+    // Notify external watchers that a user prompt was submitted
+    let prompt_text: String = input
+        .iter()
+        .filter_map(|ui| match ui {
+            UserInput::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !prompt_text.is_empty() {
+        sess.notifier().notify(&UserNotification::UserPromptSubmit {
+            thread_id: sess.conversation_id.to_string(),
+            turn_id: turn_context.sub_id.clone(),
+            cwd: turn_context.cwd.display().to_string(),
+            prompt: prompt_text,
+        });
+    }
+
     if total_usage_tokens >= auto_compact_limit {
         run_auto_compact(&sess, &turn_context).await;
     }
