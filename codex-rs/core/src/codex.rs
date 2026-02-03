@@ -2627,6 +2627,9 @@ mod handlers {
     use codex_rmcp_client::ElicitationAction;
     use codex_rmcp_client::ElicitationResponse;
     use mcp_types::RequestId;
+
+    use crate::user_notification::UserNotification;
+
     use std::path::PathBuf;
     use std::sync::Arc;
     use tracing::info;
@@ -2763,10 +2766,14 @@ mod handlers {
             decision,
             codex_protocol::approvals::ElicitationAction::Accept
         );
+        let request_id_str = match &request_id {
+            RequestId::String(s) => s.clone(),
+            RequestId::Integer(i) => i.to_string(),
+        };
         sess.notifier().notify(&UserNotification::ApprovalResponse {
             thread_id: sess.conversation_id.to_string(),
             turn_id: None,
-            request_id: Some(request_id.to_string()),
+            request_id: Some(request_id_str),
             approved,
         });
 

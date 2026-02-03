@@ -68,7 +68,7 @@ use crate::config::types::McpServerTransportConfig;
 use crate::user_notification::ApprovalType;
 use crate::user_notification::UserNotification;
 use crate::user_notification::UserNotifier;
-use uuid::Uuid;
+use codex_protocol::ThreadId;
 
 /// Delimiter used to separate the server name from the tool name in a fully
 /// qualified tool name.
@@ -190,7 +190,7 @@ impl ElicitationRequestManager {
         server_name: String,
         tx_event: Sender<Event>,
         notifier: UserNotifier,
-        conversation_id: Uuid,
+        conversation_id: ThreadId,
     ) -> SendElicitation {
         let elicitation_requests = self.requests.clone();
         Box::new(move |id, elicitation| {
@@ -207,12 +207,16 @@ impl ElicitationRequestManager {
                 }
 
                 // Notify external watchers that elicitation approval is requested
+                let request_id_str = match &id {
+                    RequestId::String(s) => s.clone(),
+                    RequestId::Integer(i) => i.to_string(),
+                };
                 notifier.notify(&UserNotification::ApprovalRequested {
                     thread_id: conversation_id.to_string(),
                     turn_id: None,
-                    request_id: Some(id.to_string()),
+                    request_id: Some(request_id_str),
                     approval_type: ApprovalType::Elicitation,
-                    description: elicitation.message.clone().unwrap_or_default(),
+                    description: elicitation.message.clone(),
                 });
 
                 let _ = tx_event
@@ -274,7 +278,7 @@ impl AsyncManagedClient {
         tx_event: Sender<Event>,
         elicitation_requests: ElicitationRequestManager,
         notifier: UserNotifier,
-        conversation_id: Uuid,
+        conversation_id: ThreadId,
     ) -> Self {
         let tool_filter = ToolFilter::from_config(&config);
         let fut = async move {
@@ -348,7 +352,7 @@ impl McpConnectionManager {
         cancel_token: CancellationToken,
         initial_sandbox_state: SandboxState,
         notifier: UserNotifier,
-        conversation_id: Uuid,
+        conversation_id: ThreadId,
     ) {
         if cancel_token.is_cancelled() {
             return;
@@ -879,7 +883,7 @@ async fn start_server_task(
     tx_event: Sender<Event>,
     elicitation_requests: ElicitationRequestManager,
     notifier: UserNotifier,
-    conversation_id: Uuid,
+    conversation_id: ThreadId,
 ) -> Result<ManagedClient, StartupOutcomeError> {
     let params = mcp_types::InitializeRequestParams {
         capabilities: ClientCapabilities {
