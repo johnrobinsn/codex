@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use async_channel::unbounded;
+use codex_protocol::ThreadId;
 use codex_protocol::protocol::McpListToolsResponseEvent;
 use codex_protocol::protocol::SandboxPolicy;
 use mcp_types::Tool as McpTool;
@@ -23,6 +24,7 @@ use crate::features::Feature;
 use crate::mcp::auth::compute_auth_statuses;
 use crate::mcp_connection_manager::McpConnectionManager;
 use crate::mcp_connection_manager::SandboxState;
+use crate::user_notification::UserNotifier;
 
 const MCP_TOOL_NAME_PREFIX: &str = "mcp";
 const MCP_TOOL_NAME_DELIMITER: &str = "__";
@@ -175,6 +177,8 @@ pub async fn collect_mcp_snapshot(config: &Config) -> McpListToolsResponseEvent 
             tx_event,
             cancel_token.clone(),
             sandbox_state,
+            UserNotifier::default(),
+            ThreadId::new(),
         )
         .await;
 

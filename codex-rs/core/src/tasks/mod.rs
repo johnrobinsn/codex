@@ -30,6 +30,7 @@ use crate::session_prefix::TURN_ABORTED_OPEN_TAG;
 use crate::state::ActiveTurn;
 use crate::state::RunningTask;
 use crate::state::TaskKind;
+use crate::user_notification::UserNotification;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::RolloutItem;
@@ -273,6 +274,12 @@ impl Session {
             // Ensure the marker is durably visible before emitting TurnAborted: some clients
             // synchronously re-read the rollout on receipt of the abort event.
             self.flush_rollout().await;
+
+            // Notify external watchers that the turn was cancelled by the user
+            self.notifier().notify(&UserNotification::TurnCancelled {
+                thread_id: self.conversation_id.to_string(),
+                turn_id: task.turn_context.sub_id.clone(),
+            });
         }
 
         let event = EventMsg::TurnAborted(TurnAbortedEvent { reason });

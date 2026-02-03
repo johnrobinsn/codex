@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use async_channel::unbounded;
 pub use codex_app_server_protocol::AppInfo;
+use codex_protocol::ThreadId;
 use codex_protocol::protocol::SandboxPolicy;
 use tokio_util::sync::CancellationToken;
 
@@ -16,6 +17,7 @@ use crate::mcp::auth::compute_auth_statuses;
 use crate::mcp::with_codex_apps_mcp;
 use crate::mcp_connection_manager::DEFAULT_STARTUP_TIMEOUT;
 use crate::mcp_connection_manager::McpConnectionManager;
+use crate::user_notification::UserNotifier;
 
 pub async fn list_accessible_connectors_from_mcp_tools(
     config: &Config,
@@ -53,6 +55,8 @@ pub async fn list_accessible_connectors_from_mcp_tools(
             tx_event,
             cancel_token.clone(),
             sandbox_state,
+            UserNotifier::default(),
+            ThreadId::new(),
         )
         .await;
 

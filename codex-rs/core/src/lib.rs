@@ -126,7 +126,7 @@ pub use transport_manager::TransportManager;
 mod function_tool;
 mod state;
 mod tasks;
-mod user_notification;
+pub mod user_notification;
 mod user_shell_command;
 pub mod util;
 

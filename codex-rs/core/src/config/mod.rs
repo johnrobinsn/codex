@@ -178,22 +178,47 @@ pub struct Config {
     pub compact_prompt: Option<String>,
 
     /// Optional external notifier command. When set, Codex will spawn this
-    /// program after each completed *turn* (i.e. when the agent finishes
-    /// processing a user submission). The value must be the full command
-    /// broken into argv tokens **without** the trailing JSON argument - Codex
-    /// appends one extra argument containing a JSON payload describing the
+    /// program for various session lifecycle events. The value must be the full
+    /// command broken into argv tokens **without** the trailing JSON argument -
+    /// Codex appends one extra argument containing a JSON payload describing the
     /// event.
     ///
-    /// Example `~/.codex/config.toml` snippet:
+    /// # Events
+    ///
+    /// | Event | When Fired |
+    /// |-------|------------|
+    /// | `session-start` | New session begins |
+    /// | `session-end` | Session ends |
+    /// | `user-prompt-submit` | User submits a prompt |
+    /// | `approval-requested` | Agent needs user approval (exec/patch/elicitation) |
+    /// | `approval-response` | User responds to approval request |
+    /// | `turn-cancelled` | User interrupts agent (Escape) |
+    /// | `agent-turn-complete` | Agent completes a turn |
+    ///
+    /// # Example
+    ///
+    /// `~/.codex/config.toml`:
     ///
     /// ```toml
     /// notify = ["notify-send", "Codex"]
     /// ```
     ///
-    /// which will be invoked as:
+    /// This will be invoked as:
     ///
     /// ```shell
-    /// notify-send Codex '{"type":"agent-turn-complete","turn-id":"12345"}'
+    /// notify-send Codex '{"type":"agent-turn-complete","thread-id":"uuid","turn-id":"1",...}'
+    /// ```
+    ///
+    /// # Example Payloads
+    ///
+    /// ```json
+    /// {"type":"session-start","thread-id":"uuid","cwd":"/path","pid":12345}
+    /// {"type":"user-prompt-submit","thread-id":"uuid","turn-id":"1","cwd":"/path","prompt":"..."}
+    /// {"type":"approval-requested","thread-id":"uuid","turn-id":"1","approval-type":"exec","description":"..."}
+    /// {"type":"approval-response","thread-id":"uuid","turn-id":"1","approved":true}
+    /// {"type":"agent-turn-complete","thread-id":"uuid","turn-id":"1","cwd":"/path",...}
+    /// {"type":"turn-cancelled","thread-id":"uuid","turn-id":"1"}
+    /// {"type":"session-end","thread-id":"uuid"}
     /// ```
     ///
     /// If unset the feature is disabled.

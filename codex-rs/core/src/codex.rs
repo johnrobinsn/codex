@@ -201,6 +201,7 @@ use crate::tools::spec::ToolsConfig;
 use crate::tools::spec::ToolsConfigParams;
 use crate::turn_diff_tracker::TurnDiffTracker;
 use crate::unified_exec::UnifiedExecProcessManager;
+use crate::user_notification::ApprovalType;
 use crate::user_notification::UserNotification;
 use crate::util::backoff;
 use crate::windows_sandbox::WindowsSandboxLevelExt;
@@ -964,6 +965,13 @@ impl Session {
             next_internal_sub_id: AtomicU64::new(0),
         });
 
+        // Notify external watchers that a session has started
+        sess.notifier().notify(&UserNotification::SessionStart {
+            thread_id: conversation_id.to_string(),
+            cwd: session_configuration.cwd.display().to_string(),
+            pid: std::process::id(),
+        });
+
         // Dispatch the SessionConfiguredEvent first and then report any errors.
         // If resuming, include converted initial messages in the payload so UIs can render them immediately.
         let initial_messages = initial_history.get_event_msgs();
@@ -1010,6 +1018,8 @@ impl Session {
                 tx_event.clone(),
                 cancel_token,
                 sandbox_state,
+                sess.notifier().clone(),
+                sess.conversation_id,
             )
             .await;
 
@@ -1602,6 +1612,9 @@ impl Session {
             warn!("Overwriting existing pending approval for sub_id: {event_id}");
         }
 
+        // Capture command description before command is moved
+        let command_description = command.join(" ");
+
         let parsed_cmd = parse_command(&command);
         let event = EventMsg::ExecApprovalRequest(ExecApprovalRequestEvent {
             call_id,
@@ -1613,6 +1626,17 @@ impl Session {
             parsed_cmd,
         });
         self.send_event(turn_context, event).await;
+
+        // Notify external watchers that approval is requested
+        self.notifier()
+            .notify(&UserNotification::ApprovalRequested {
+                thread_id: self.conversation_id.to_string(),
+                turn_id: Some(turn_context.sub_id.clone()),
+                request_id: None,
+                approval_type: ApprovalType::Exec,
+                description: command_description,
+            });
+
         rx_approve.await.unwrap_or_default()
     }
 
@@ -1642,6 +1666,15 @@ impl Session {
             warn!("Overwriting existing pending approval for sub_id: {event_id}");
         }
 
+        // Build description from changed files (sorted for deterministic output)
+        let mut paths: Vec<_> = changes.keys().collect();
+        paths.sort();
+        let patch_description = paths
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+
         let event = EventMsg::ApplyPatchApprovalRequest(ApplyPatchApprovalRequestEvent {
             call_id,
             turn_id: turn_context.sub_id.clone(),
@@ -1650,6 +1683,17 @@ impl Session {
             grant_root,
         });
         self.send_event(turn_context, event).await;
+
+        // Notify external watchers that approval is requested
+        self.notifier()
+            .notify(&UserNotification::ApprovalRequested {
+                thread_id: self.conversation_id.to_string(),
+                turn_id: Some(turn_context.sub_id.clone()),
+                request_id: None,
+                approval_type: ApprovalType::Patch,
+                description: patch_description,
+            });
+
         rx_approve
     }
 
@@ -2332,6 +2376,8 @@ impl Session {
                 self.get_tx_event(),
                 cancel_token,
                 sandbox_state,
+                self.notifier().clone(),
+                self.conversation_id,
             )
             .await;
 
@@ -2581,6 +2627,9 @@ mod handlers {
     use codex_rmcp_client::ElicitationAction;
     use codex_rmcp_client::ElicitationResponse;
     use mcp_types::RequestId;
+
+    use crate::user_notification::UserNotification;
+
     use std::path::PathBuf;
     use std::sync::Arc;
     use tracing::info;
@@ -2712,6 +2761,22 @@ mod handlers {
         request_id: RequestId,
         decision: codex_protocol::approvals::ElicitationAction,
     ) {
+        // Notify external watchers of the approval response
+        let approved = matches!(
+            decision,
+            codex_protocol::approvals::ElicitationAction::Accept
+        );
+        let request_id_str = match &request_id {
+            RequestId::String(s) => s.clone(),
+            RequestId::Integer(i) => i.to_string(),
+        };
+        sess.notifier().notify(&UserNotification::ApprovalResponse {
+            thread_id: sess.conversation_id.to_string(),
+            turn_id: None,
+            request_id: Some(request_id_str),
+            approved,
+        });
+
         let action = match decision {
             codex_protocol::approvals::ElicitationAction::Accept => ElicitationAction::Accept,
             codex_protocol::approvals::ElicitationAction::Decline => ElicitationAction::Decline,
@@ -2725,7 +2790,7 @@ mod handlers {
         };
         let response = ElicitationResponse { action, content };
         if let Err(err) = sess
-            .resolve_elicitation(server_name, request_id, response)
+            .resolve_elicitation(server_name.clone(), request_id, response)
             .await
         {
             warn!(
@@ -2738,6 +2803,20 @@ mod handlers {
     /// Propagate a user's exec approval decision to the session.
     /// Also optionally applies an execpolicy amendment.
     pub async fn exec_approval(sess: &Arc<Session>, id: String, decision: ReviewDecision) {
+        // Notify external watchers of the approval response
+        let approved = matches!(
+            decision,
+            ReviewDecision::Approved
+                | ReviewDecision::ApprovedExecpolicyAmendment { .. }
+                | ReviewDecision::ApprovedForSession
+        );
+        sess.notifier().notify(&UserNotification::ApprovalResponse {
+            thread_id: sess.conversation_id.to_string(),
+            turn_id: Some(id.clone()),
+            request_id: None,
+            approved,
+        });
+
         if let ReviewDecision::ApprovedExecpolicyAmendment {
             proposed_execpolicy_amendment,
         } = &decision
@@ -2771,6 +2850,20 @@ mod handlers {
     }
 
     pub async fn patch_approval(sess: &Arc<Session>, id: String, decision: ReviewDecision) {
+        // Notify external watchers of the approval response
+        let approved = matches!(
+            decision,
+            ReviewDecision::Approved
+                | ReviewDecision::ApprovedExecpolicyAmendment { .. }
+                | ReviewDecision::ApprovedForSession
+        );
+        sess.notifier().notify(&UserNotification::ApprovalResponse {
+            thread_id: sess.conversation_id.to_string(),
+            turn_id: Some(id.clone()),
+            request_id: None,
+            approved,
+        });
+
         match decision {
             ReviewDecision::Abort => {
                 sess.interrupt_task().await;
@@ -3083,6 +3176,11 @@ mod handlers {
             sess.send_event_raw(event).await;
         }
 
+        // Notify external watchers that the session is ending
+        sess.notifier().notify(&UserNotification::SessionEnd {
+            thread_id: sess.conversation_id.to_string(),
+        });
+
         let event = Event {
             id: sub_id,
             msg: EventMsg::ShutdownComplete,
@@ -3309,6 +3407,25 @@ pub(crate) async fn run_turn(
         collaboration_mode_kind: turn_context.collaboration_mode.mode,
     });
     sess.send_event(&turn_context, event).await;
+
+    // Notify external watchers that a user prompt was submitted
+    let prompt_text: String = input
+        .iter()
+        .filter_map(|ui| match ui {
+            UserInput::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !prompt_text.is_empty() {
+        sess.notifier().notify(&UserNotification::UserPromptSubmit {
+            thread_id: sess.conversation_id.to_string(),
+            turn_id: turn_context.sub_id.clone(),
+            cwd: turn_context.cwd.display().to_string(),
+            prompt: prompt_text,
+        });
+    }
+
     if total_usage_tokens >= auto_compact_limit {
         run_auto_compact(&sess, &turn_context).await;
     }
