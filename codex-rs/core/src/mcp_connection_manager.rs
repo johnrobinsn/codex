@@ -65,6 +65,10 @@ use tracing::warn;
 use crate::codex::INITIAL_SUBMIT_ID;
 use crate::config::types::McpServerConfig;
 use crate::config::types::McpServerTransportConfig;
+use crate::user_notification::ApprovalType;
+use crate::user_notification::UserNotification;
+use crate::user_notification::UserNotifier;
+use uuid::Uuid;
 
 /// Delimiter used to separate the server name from the tool name in a fully
 /// qualified tool name.
@@ -181,18 +185,36 @@ impl ElicitationRequestManager {
             .map_err(|e| anyhow!("failed to send elicitation response: {e:?}"))
     }
 
-    fn make_sender(&self, server_name: String, tx_event: Sender<Event>) -> SendElicitation {
+    fn make_sender(
+        &self,
+        server_name: String,
+        tx_event: Sender<Event>,
+        notifier: UserNotifier,
+        conversation_id: Uuid,
+    ) -> SendElicitation {
         let elicitation_requests = self.requests.clone();
         Box::new(move |id, elicitation| {
             let elicitation_requests = elicitation_requests.clone();
             let tx_event = tx_event.clone();
             let server_name = server_name.clone();
+            let notifier = notifier.clone();
+            let conversation_id = conversation_id;
             async move {
                 let (tx, rx) = oneshot::channel();
                 {
                     let mut lock = elicitation_requests.lock().await;
                     lock.insert((server_name.clone(), id.clone()), tx);
                 }
+
+                // Notify external watchers that elicitation approval is requested
+                notifier.notify(&UserNotification::ApprovalRequested {
+                    thread_id: conversation_id.to_string(),
+                    turn_id: None,
+                    request_id: Some(id.to_string()),
+                    approval_type: ApprovalType::Elicitation,
+                    description: elicitation.message.clone().unwrap_or_default(),
+                });
+
                 let _ = tx_event
                     .send(Event {
                         id: "mcp_elicitation_request".to_string(),
@@ -251,6 +273,8 @@ impl AsyncManagedClient {
         cancel_token: CancellationToken,
         tx_event: Sender<Event>,
         elicitation_requests: ElicitationRequestManager,
+        notifier: UserNotifier,
+        conversation_id: Uuid,
     ) -> Self {
         let tool_filter = ToolFilter::from_config(&config);
         let fut = async move {
@@ -268,6 +292,8 @@ impl AsyncManagedClient {
                 tool_filter,
                 tx_event,
                 elicitation_requests,
+                notifier,
+                conversation_id,
             )
             .or_cancel(&cancel_token)
             .await
@@ -321,6 +347,8 @@ impl McpConnectionManager {
         tx_event: Sender<Event>,
         cancel_token: CancellationToken,
         initial_sandbox_state: SandboxState,
+        notifier: UserNotifier,
+        conversation_id: Uuid,
     ) {
         if cancel_token.is_cancelled() {
             return;
@@ -346,6 +374,8 @@ impl McpConnectionManager {
                 cancel_token.clone(),
                 tx_event.clone(),
                 elicitation_requests.clone(),
+                notifier.clone(),
+                conversation_id,
             );
             clients.insert(server_name.clone(), async_managed_client.clone());
             let tx_event = tx_event.clone();
@@ -848,6 +878,8 @@ async fn start_server_task(
     tool_filter: ToolFilter,
     tx_event: Sender<Event>,
     elicitation_requests: ElicitationRequestManager,
+    notifier: UserNotifier,
+    conversation_id: Uuid,
 ) -> Result<ManagedClient, StartupOutcomeError> {
     let params = mcp_types::InitializeRequestParams {
         capabilities: ClientCapabilities {
@@ -870,7 +902,8 @@ async fn start_server_task(
         protocol_version: mcp_types::MCP_SCHEMA_VERSION.to_owned(),
     };
 
-    let send_elicitation = elicitation_requests.make_sender(server_name.clone(), tx_event);
+    let send_elicitation =
+        elicitation_requests.make_sender(server_name.clone(), tx_event, notifier, conversation_id);
 
     let initialize_result = client
         .initialize(params, startup_timeout, send_elicitation)

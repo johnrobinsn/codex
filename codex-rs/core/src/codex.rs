@@ -1018,6 +1018,8 @@ impl Session {
                 tx_event.clone(),
                 cancel_token,
                 sandbox_state,
+                sess.notifier().clone(),
+                sess.conversation_id,
             )
             .await;
 
@@ -1629,7 +1631,8 @@ impl Session {
         self.notifier()
             .notify(&UserNotification::ApprovalRequested {
                 thread_id: self.conversation_id.to_string(),
-                turn_id: turn_context.sub_id.clone(),
+                turn_id: Some(turn_context.sub_id.clone()),
+                request_id: None,
                 approval_type: ApprovalType::Exec,
                 description: command_description,
             });
@@ -1663,9 +1666,11 @@ impl Session {
             warn!("Overwriting existing pending approval for sub_id: {event_id}");
         }
 
-        // Build description from changed files
-        let patch_description: String = changes
-            .keys()
+        // Build description from changed files (sorted for deterministic output)
+        let mut paths: Vec<_> = changes.keys().collect();
+        paths.sort();
+        let patch_description = paths
+            .iter()
             .map(|p| p.display().to_string())
             .collect::<Vec<_>>()
             .join(", ");
@@ -1683,7 +1688,8 @@ impl Session {
         self.notifier()
             .notify(&UserNotification::ApprovalRequested {
                 thread_id: self.conversation_id.to_string(),
-                turn_id: turn_context.sub_id.clone(),
+                turn_id: Some(turn_context.sub_id.clone()),
+                request_id: None,
                 approval_type: ApprovalType::Patch,
                 description: patch_description,
             });
@@ -2370,6 +2376,8 @@ impl Session {
                 self.get_tx_event(),
                 cancel_token,
                 sandbox_state,
+                self.notifier().clone(),
+                self.conversation_id,
             )
             .await;
 
@@ -2757,7 +2765,8 @@ mod handlers {
         );
         sess.notifier().notify(&UserNotification::ApprovalResponse {
             thread_id: sess.conversation_id.to_string(),
-            turn_id: request_id.to_string(),
+            turn_id: None,
+            request_id: Some(request_id.to_string()),
             approved,
         });
 
@@ -2788,10 +2797,16 @@ mod handlers {
     /// Also optionally applies an execpolicy amendment.
     pub async fn exec_approval(sess: &Arc<Session>, id: String, decision: ReviewDecision) {
         // Notify external watchers of the approval response
-        let approved = !matches!(decision, ReviewDecision::Abort);
+        let approved = matches!(
+            decision,
+            ReviewDecision::Approved
+                | ReviewDecision::ApprovedExecpolicyAmendment { .. }
+                | ReviewDecision::ApprovedForSession
+        );
         sess.notifier().notify(&UserNotification::ApprovalResponse {
             thread_id: sess.conversation_id.to_string(),
-            turn_id: id.clone(),
+            turn_id: Some(id.clone()),
+            request_id: None,
             approved,
         });
 
@@ -2829,10 +2844,16 @@ mod handlers {
 
     pub async fn patch_approval(sess: &Arc<Session>, id: String, decision: ReviewDecision) {
         // Notify external watchers of the approval response
-        let approved = !matches!(decision, ReviewDecision::Abort);
+        let approved = matches!(
+            decision,
+            ReviewDecision::Approved
+                | ReviewDecision::ApprovedExecpolicyAmendment { .. }
+                | ReviewDecision::ApprovedForSession
+        );
         sess.notifier().notify(&UserNotification::ApprovalResponse {
             thread_id: sess.conversation_id.to_string(),
-            turn_id: id.clone(),
+            turn_id: Some(id.clone()),
+            request_id: None,
             approved,
         });
 
